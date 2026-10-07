@@ -99,7 +99,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  timer_sleep (100); /* Sleep 100 ticks to let the user program finish */
+  timer_sleep (10); /* Sleep 100 ticks to let the user program finish */
   return -1;
 }
 
