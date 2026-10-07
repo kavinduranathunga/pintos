@@ -472,6 +472,7 @@ setup_stack (void **esp, const char *cmdline)
   char *token, *save_ptr;
   char *argv[128];
   int argc = 0;
+  int i; /* Declared outside for C89 compatibility */
 
   /* Make a temporary copy of cmdline to tokenize using strtok_r */
   char *cmd_copy = palloc_get_page (0);
@@ -489,19 +490,15 @@ setup_stack (void **esp, const char *cmdline)
       argc++;
     }
 
-  /* 3. Round stack pointer down to multiple of 4 for word alignment */
-  while ((uintptr_t) *esp % 4 != 0)
-    {
-      *esp -= 1;
-      *(uint8_t *) *esp = 0;
-    }
+  /* 3. Round stack pointer down to 4-byte boundary for word alignment */
+  *esp = (void *) ((uintptr_t) *esp & ~0x3);
 
   /* 4. Push NULL sentinel pointer (argv[argc]) */
   *esp -= sizeof (char *);
   *(char **) *esp = NULL;
 
   /* 5. Push pointers to argument strings in reverse order */
-  for (int i = argc - 1; i >= 0; i--)
+  for (i = argc - 1; i >= 0; i--)
     {
       *esp -= sizeof (char *);
       *(char **) *esp = argv[i];
