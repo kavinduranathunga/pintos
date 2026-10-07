@@ -135,7 +135,7 @@ pintos_init (void)
   } else {
     // TODO: no command line passed to kernel. Run interactively 
 
-    /**Exercise 3.1 */
+    /**lab_0 Exercise 3.1 */
 
     char buf[128];
     int i = 0;
