@@ -40,7 +40,7 @@ process_execute (const char *file_name)
 
 
   /*lab02 exercise 1.1   get the process's name */
-  For example, if file_name is "grep foo bar", real_name becomes "grep". */
+  /*For example, if file_name is "grep foo bar", real_name becomes "grep". */
   char prog_name[128];
   char *save_ptr;
   strlcpy (prog_name, file_name, sizeof prog_name);
@@ -50,6 +50,7 @@ process_execute (const char *file_name)
   tid = thread_create (real_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+    
   return tid;
 }
 
