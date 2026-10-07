@@ -38,12 +38,22 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+
+  /*lab02 exercise 1.1   get the process's name */
+  For example, if file_name is "grep foo bar", real_name becomes "grep". */
+  char prog_name[128];
+  char *save_ptr;
+  strlcpy (prog_name, file_name, sizeof prog_name);
+  char *real_name = strtok_r (prog_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (real_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
 }
+
+/*end */
 
 /** A thread function that loads a user process and starts it
    running. */
@@ -97,6 +107,9 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /*print corrospondif massage*/
+  printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

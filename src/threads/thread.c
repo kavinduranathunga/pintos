@@ -178,9 +178,15 @@ thread_create (const char *name, int priority,
   t = palloc_get_page (PAL_ZERO);
   if (t == NULL)
     return TID_ERROR;
+   
 
   /* Initialize thread. */
   init_thread (t, name, priority);
+
+  #ifdef USERPROG
+    t->exit_status = 0;   /*lab2 exersice 1.1   inialize exit_status*/
+  #endif
+
   tid = t->tid = allocate_tid ();
 
   /* Stack frame for kernel_thread(). */
