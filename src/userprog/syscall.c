@@ -3,17 +3,14 @@
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
-//
 #include "threads/vaddr.h"
 #include "userprog/process.h"
-//
 #include "threads/init.h"
 #include "threads/synch.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
-
 
 struct lock filesys_lock;
 
@@ -28,7 +25,8 @@ get_user (const uint8_t *uaddr)
   return result;
 }
 
-static bool
+/* Added UNUSED to prevent compiler warning when put_user isn't called directly */
+static bool UNUSED
 put_user (uint8_t *udst, uint8_t byte)
 {
   int error_code;
@@ -36,7 +34,6 @@ put_user (uint8_t *udst, uint8_t byte)
        : "=&a" (error_code), "=m" (*udst) : "q" (byte));
   return error_code != -1;
 }
-
 
 static void
 check_ptr (const void *ptr)
@@ -72,7 +69,7 @@ check_string (const char *str)
 static int
 read_user_int (const int *uaddr)
 {
-const uint8_t *byte_ptr = (const uint8_t *) uaddr;
+  const uint8_t *byte_ptr = (const uint8_t *) uaddr;
   check_buffer (byte_ptr, 4);
 
   int value = 0;
@@ -96,7 +93,7 @@ syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-//sys call implementations
+/* System Call Implementations */
 
 void
 halt (void)
@@ -211,9 +208,9 @@ close (int fd UNUSED)
 }
 
 static void
-syscall_handler (struct intr_frame *f UNUSED) 
+syscall_handler (struct intr_frame *f) 
 {
-int syscall_num = read_user_int ((int *) f->esp);
+  int syscall_num = read_user_int ((int *) f->esp);
 
   switch (syscall_num)
     {
