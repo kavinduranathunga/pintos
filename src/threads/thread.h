@@ -95,23 +95,14 @@ struct thread
     struct list_elem elem;              /**< List element. */
 
 #ifdef USERPROG
-
-    uint32_t *pagedir;                    
+   uint32_t *pagedir;                    
     int exit_status;                      
 
-    
     struct file *file_table[128];         
-    int next_fd;                         
-
-    /* Task 4 */
+    int next_fd;                          
     struct thread *parent;                
-    struct list children;                 
-    struct list_elem child_elem;          
-    struct semaphore load_sema;           
-    struct semaphore wait_sema;           
-    bool load_status;                     
-    int child_exit_status;                
-    bool has_waited;
+    struct list children;                
+    struct child_status *cp;
 #endif
 
     /* Owned by thread.c. */

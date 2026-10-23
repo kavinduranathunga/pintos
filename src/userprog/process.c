@@ -42,26 +42,38 @@ process_execute (const char *file_name)
   strlcpy (prog_name, file_name, sizeof prog_name);
   char *real_name = strtok_r (prog_name, " ", &save_ptr);
 
+  /* Hint 1: Store execution information in the heap using malloc() */
+  struct child_status *cp = malloc (sizeof (struct child_status));
+  if (cp == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+
+  cp->tid = TID_ERROR;
+  cp->exit_status = -1;
+  cp->load_status = false;
+  cp->has_waited = false;
+  sema_init (&cp->load_sema, 0);
+  sema_init (&cp->wait_sema, 0);
+
   tid = thread_create (real_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     {
+      free (cp);
       palloc_free_page (fn_copy); 
       return TID_ERROR;
     }
 
+  cp->tid = tid;
+  
   struct thread *cur = thread_current ();
-  struct thread *child = thread_from_tid (tid);
+  list_push_back (&cur->children, &cp->elem);
 
-  if (child != NULL)
-    {
-      child->parent = cur;
-      list_push_back (&cur->children, &child->child_elem);
-    }
+  /* Parent waits here until child finishes loading (Exec Synchronization) */
+  sema_down (&cp->load_sema);
 
-  /* Parent waits here until child finishes loading */
-  sema_down (&child->load_sema);
-
-  if (!child->load_status)
+  if (!cp->load_status)
     return -1;
 
   return tid;
@@ -85,8 +97,27 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  cur->load_status = success;
-  sema_up (&cur->load_sema);
+  /* Find our child_status from parent's children list and link it */
+  struct thread *parent = cur->parent;
+  if (parent != NULL)
+    {
+      struct list_elem *e;
+      for (e = list_begin (&parent->children); e != list_end (&parent->children); e = list_next (e))
+        {
+          struct child_status *c = list_entry (e, struct child_status, elem);
+          if (c->tid == cur->tid)
+            {
+              cur->cp = c;
+              break;
+            }
+        }
+    }
+
+  if (cur->cp != NULL)
+    {
+      cur->cp->load_status = success;
+      sema_up (&cur->cp->load_sema);
+    }
 
   palloc_free_page (file_name);
   if (!success) 
@@ -106,30 +137,31 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
   struct thread *cur = thread_current ();
-  struct thread *child = NULL;
+  struct child_status *cp = NULL;
   struct list_elem *e;
 
   for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e))
     {
-      struct thread *t = list_entry (e, struct thread, child_elem);
-      if (t->tid == child_tid)
+      struct child_status *c = list_entry (e, struct child_status, elem);
+      if (c->tid == child_tid)
         {
-          child = t;
+          cp = c;
           break;
         }
     }
 
-  if (child == NULL || child->has_waited)
+  if (cp == NULL || cp->has_waited)
     return -1;
 
-  child->has_waited = true;
-  sema_down (&child->wait_sema);
+  cp->has_waited = true;
+  sema_down (&cp->wait_sema);
 
-  int status = child->child_exit_status;
-  list_remove (&child->child_elem);
+  int status = cp->exit_status;
+  list_remove (&cp->elem);
+  free (cp); /* Hint 3: Free heap memory when parent waits and reaps */
 
   return status;
 }
@@ -141,11 +173,13 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  /*print corrospondif massage*/
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
-  cur->child_exit_status = cur->exit_status;
-  sema_up (&cur->wait_sema);
+  if (cur->cp != NULL)
+    {
+      cur->cp->exit_status = cur->exit_status;
+      sema_up (&cur->cp->wait_sema);
+    }
 
   /* Close all open file descriptors */
   lock_acquire (&filesys_lock);
@@ -159,18 +193,9 @@ process_exit (void)
     }
   lock_release (&filesys_lock);
 
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
   pd = cur->pagedir;
   if (pd != NULL) 
     {
-      /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
