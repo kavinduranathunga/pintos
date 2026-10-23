@@ -478,6 +478,7 @@ init_thread (struct thread *t, const char *name, int priority)
     t->parent = NULL;
     list_init (&t->children);
     t->cp = NULL;
+    t->run_file = NULL;
   #endif
 
   old_level = intr_disable ();

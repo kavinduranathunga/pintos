@@ -48,10 +48,23 @@ check_ptr (const void *ptr)
 static void
 check_buffer (const void *buffer, unsigned size)
 {
-  const char *ptr = (const char *) buffer;
-  for (unsigned i = 0; i < size; i++)
+  if (buffer == NULL || !is_user_vaddr (buffer) || !is_user_vaddr ((char *) buffer + size - 1))
     {
-      check_ptr (ptr + i);
+      thread_current ()->exit_status = -1;
+      thread_exit ();
+    }
+
+  /* Check every page in the buffer range to prevent page faults */
+  uintptr_t start = pg_round_down (buffer);
+  uintptr_t end = pg_round_down ((char *) buffer + size - 1);
+  
+  for (uintptr_t addr = start; addr <= end; addr += PGSIZE)
+    {
+      if (pagedir_get_page (thread_current ()->pagedir, (void *) addr) == NULL)
+        {
+          thread_current ()->exit_status = -1;
+          thread_exit ();
+        }
     }
 }
 

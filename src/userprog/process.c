@@ -37,7 +37,6 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* 1. Allocate child status in the heap (Hint 1) */
   struct child_status *cp = malloc (sizeof (struct child_status));
   if (cp == NULL)
     {
@@ -61,7 +60,6 @@ process_execute (const char *file_name)
   strlcpy (prog_name, file_name, sizeof prog_name);
   char *real_name = strtok_r (prog_name, " ", &save_ptr);
 
-  /* 2. Pass `cp` directly as aux to thread_create (Hint 2) */
   tid = thread_create (real_name, PRI_DEFAULT, start_process, cp);
   if (tid == TID_ERROR)
     {
@@ -73,18 +71,15 @@ process_execute (const char *file_name)
 
   cp->tid = tid;
 
-  struct thread *child = thread_from_tid (tid);
-  if (child != NULL)
-    {
-      child->parent = cur;
-      child->cp = cp;
-    }
-
-  /* 3. Parent waits here until child finishes loading */
   sema_down (&cp->load_sema);
 
   if (!cp->load_status)
-    return -1;
+    {
+      sema_down (&cp->wait_sema);
+      list_remove (&cp->elem);
+      free (cp);
+      return -1;
+    }
 
   return tid;
 }
@@ -164,6 +159,7 @@ process_wait (tid_t child_tid)
 }
 
 /** Free the current process's resources. */
+/** Free the current process's resources. */
 void
 process_exit (void)
 {
@@ -172,20 +168,6 @@ process_exit (void)
 
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
-  if (cur->cp != NULL)
-    {
-      cur->cp->exit_status = cur->exit_status;
-      sema_up (&cur->cp->wait_sema);
-    }
-
-  if (cur->run_file != NULL)
-    {
-      file_allow_write (cur->run_file);
-      file_close (cur->run_file);
-      cur->run_file = NULL;
-    }
-
-  /* Close all open file descriptors */
   lock_acquire (&filesys_lock);
   for (int i = 2; i < 128; i++)
     {
@@ -194,6 +176,11 @@ process_exit (void)
           file_close (cur->file_table[i]);
           cur->file_table[i] = NULL;
         }
+    }
+  if (cur->run_file != NULL)
+    {
+      file_close (cur->run_file);
+      cur->run_file = NULL;
     }
   lock_release (&filesys_lock);
 
@@ -204,8 +191,13 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
-}
 
+  if (cur->cp != NULL)
+    {
+      cur->cp->exit_status = cur->exit_status;
+      sema_up (&cur->cp->wait_sema);
+    }
+}
 /** Sets up the CPU for running user code in the current
    thread.
    This function is called on every context switch. */
@@ -305,32 +297,25 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
-  /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
-    goto done;
+    return false;
   process_activate ();
 
-  /*lab 2 Exercise 2.1 Make a local copy of file_name to extract executable name for filesys_open */
   char fn_copy[128];
   char *save_ptr;
   strlcpy (fn_copy, file_name, sizeof fn_copy);
   char *prog_name = strtok_r (fn_copy, " ", &save_ptr);
-  /*end*/
 
-  /* Open executable file. */
-  file = filesys_open (prog_name); //change into prog_name
+  lock_acquire (&filesys_lock);
+
+  file = filesys_open (prog_name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", prog_name); //file name changed into prog_name
+      printf ("load: %s: open failed\n", prog_name);
       goto done; 
     }
 
-  // Task 5
-  file_deny_write (file);
-  t->run_file = file;
-
-  /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
       || ehdr.e_type != 2
@@ -339,11 +324,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", prog_name); // if error in prog_name file when opening print this
+      printf ("load: %s: error loading executable\n", prog_name);
       goto done; 
     }
 
-  /* Read program headers. */
   file_ofs = ehdr.e_phoff;
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
@@ -363,7 +347,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_PHDR:
         case PT_STACK:
         default:
-          /* Ignore this segment. */
           break;
         case PT_DYNAMIC:
         case PT_INTERP:
@@ -379,16 +362,12 @@ load (const char *file_name, void (**eip) (void), void **esp)
               uint32_t read_bytes, zero_bytes;
               if (phdr.p_filesz > 0)
                 {
-                  /* Normal segment.
-                     Read initial part from disk and zero the rest. */
                   read_bytes = page_offset + phdr.p_filesz;
                   zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
                                 - read_bytes);
                 }
               else 
                 {
-                  /* Entirely zero.
-                     Don't read anything from disk. */
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
@@ -402,22 +381,22 @@ load (const char *file_name, void (**eip) (void), void **esp)
         }
     }
 
-  /* Set up stack. */
-  if (!setup_stack (esp,file_name)) //Pass full file_name k for argument parsing
+  if (!setup_stack (esp, file_name))
     goto done;
 
-  /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 
   success = true;
 
  done:
-  /* We arrive here whether the load is successful or not. */
-  if (!success)
-      {
-        if (file != NULL)
-          file_close (file);
-      }
+  if (success)
+    {
+      file_deny_write (file);
+      t->run_file = file;
+    }
+  else if (file != NULL)
+    file_close (file);
+  lock_release (&filesys_lock);
   return success;
 }
 
