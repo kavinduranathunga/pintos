@@ -10,6 +10,7 @@ struct child_status
     int exit_status;
     bool load_status;
     bool has_waited;
+    char *command_line;
     struct semaphore load_sema;
     struct semaphore wait_sema;
     struct list_elem elem;

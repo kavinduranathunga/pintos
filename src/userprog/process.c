@@ -37,12 +37,7 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  char prog_name[128];
-  char *save_ptr;
-  strlcpy (prog_name, file_name, sizeof prog_name);
-  char *real_name = strtok_r (prog_name, " ", &save_ptr);
-
-  /* Hint 1: Store execution information in the heap using malloc() */
+  /* 1. Allocate child status in the heap (Hint 1) */
   struct child_status *cp = malloc (sizeof (struct child_status));
   if (cp == NULL)
     {
@@ -54,23 +49,38 @@ process_execute (const char *file_name)
   cp->exit_status = -1;
   cp->load_status = false;
   cp->has_waited = false;
+  cp->command_line = fn_copy;
   sema_init (&cp->load_sema, 0);
   sema_init (&cp->wait_sema, 0);
 
-  tid = thread_create (real_name, PRI_DEFAULT, start_process, fn_copy);
+  struct thread *cur = thread_current ();
+  list_push_back (&cur->children, &cp->elem);
+
+  char prog_name[128];
+  char *save_ptr;
+  strlcpy (prog_name, file_name, sizeof prog_name);
+  char *real_name = strtok_r (prog_name, " ", &save_ptr);
+
+  /* 2. Pass `cp` directly as aux to thread_create (Hint 2) */
+  tid = thread_create (real_name, PRI_DEFAULT, start_process, cp);
   if (tid == TID_ERROR)
     {
+      list_remove (&cp->elem);
       free (cp);
       palloc_free_page (fn_copy); 
       return TID_ERROR;
     }
 
   cp->tid = tid;
-  
-  struct thread *cur = thread_current ();
-  list_push_back (&cur->children, &cp->elem);
 
-  /* Parent waits here until child finishes loading (Exec Synchronization) */
+  struct thread *child = thread_from_tid (tid);
+  if (child != NULL)
+    {
+      child->parent = cur;
+      child->cp = cp;
+    }
+
+  /* 3. Parent waits here until child finishes loading */
   sema_down (&cp->load_sema);
 
   if (!cp->load_status)
@@ -78,18 +88,21 @@ process_execute (const char *file_name)
 
   return tid;
 }
-
 /*end */
 
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *aux)
 {
-  char *file_name = file_name_;
+  struct child_status *cp = aux;
+  char *file_name = cp->command_line;
   struct thread *cur = thread_current ();
   struct intr_frame if_;
   bool success;
+
+  /* Instantly attach cp to the thread so exit() finds it without race conditions */
+  cur->cp = cp;
 
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -97,36 +110,17 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  /* Find our child_status from parent's children list and link it */
-  struct thread *parent = cur->parent;
-  if (parent != NULL)
-    {
-      struct list_elem *e;
-      for (e = list_begin (&parent->children); e != list_end (&parent->children); e = list_next (e))
-        {
-          struct child_status *c = list_entry (e, struct child_status, elem);
-          if (c->tid == cur->tid)
-            {
-              cur->cp = c;
-              break;
-            }
-        }
-    }
-
-  if (cur->cp != NULL)
-    {
-      cur->cp->load_status = success;
-      sema_up (&cur->cp->load_sema);
-    }
+  cp->load_status = success;
+  sema_up (&cp->load_sema);
 
   palloc_free_page (file_name);
+
   if (!success) 
     thread_exit ();
 
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
-
 /** Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
