@@ -103,6 +103,7 @@ struct thread
     struct thread *parent;                
     struct list children;                
     struct child_status *cp;
+    struct file *run_file;
 #endif
 
     /* Owned by thread.c. */

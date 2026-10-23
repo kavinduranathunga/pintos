@@ -175,6 +175,13 @@ process_exit (void)
       sema_up (&cur->cp->wait_sema);
     }
 
+  if (cur->run_file != NULL)
+    {
+      file_allow_write (cur->run_file);
+      file_close (cur->run_file);
+      cur->run_file = NULL;
+    }
+
   /* Close all open file descriptors */
   lock_acquire (&filesys_lock);
   for (int i = 2; i < 128; i++)
@@ -316,6 +323,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
       goto done; 
     }
 
+  // Task 5
+  file_deny_write (file);
+  t->run_file = file;
+
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -399,7 +410,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+      {
+        if (file != NULL)
+          file_close (file);
+      }
   return success;
 }
 
