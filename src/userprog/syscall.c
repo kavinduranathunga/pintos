@@ -150,13 +150,49 @@ int
 open (const char *file)
 {
   check_string (file);
-  return -1;
+
+  lock_acquire (&filesys_lock);
+  struct file *f = filesys_open (file);
+  if (f == NULL)
+    {
+      lock_release (&filesys_lock);
+      return -1;
+    }
+
+  struct thread *cur = thread_current ();
+  if (cur->next_fd >= 128)
+    {
+      file_close (f);
+      lock_release (&filesys_lock);
+      return -1;
+    }
+
+  int fd = cur->next_fd;
+  cur->file_table[fd] = f;
+
+  while (cur->next_fd < 128 && cur->file_table[cur->next_fd] != NULL)
+    cur->next_fd++;
+
+  lock_release (&filesys_lock);
+  return fd;
 }
 
 int
-filesize (int fd UNUSED)
+filesize (int fd)
 {
-  return -1;
+  if (fd < 2 || fd >= 128)
+    return -1;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return -1;
+
+  lock_acquire (&filesys_lock);
+  int length = file_length (f);
+  lock_release (&filesys_lock);
+
+  return length;
 }
 
 int
@@ -168,13 +204,23 @@ read (int fd, void *buffer, unsigned size)
     {
       uint8_t *buf = (uint8_t *) buffer;
       for (unsigned i = 0; i < size; i++)
-        {
-          buf[i] = input_getc ();
-        }
+        buf[i] = input_getc ();
       return size;
     }
 
-  return -1;
+  if (fd < 2 || fd >= 128)
+    return -1;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return -1;
+
+  lock_acquire (&filesys_lock);
+  int bytes_read = file_read (f, buffer, size);
+  lock_release (&filesys_lock);
+
+  return bytes_read;
 }
 
 int
@@ -188,23 +234,72 @@ write (int fd, const void *buffer, unsigned size)
       return size;
     }
 
-  return -1;
+  if (fd < 2 || fd >= 128)
+    return -1;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return -1;
+
+  lock_acquire (&filesys_lock);
+  int bytes_written = file_write (f, buffer, size);
+  lock_release (&filesys_lock);
+
+  return bytes_written;
 }
 
 void
-seek (int fd UNUSED, unsigned position UNUSED)
+seek (int fd, unsigned position)
 {
+  if (fd < 2 || fd >= 128)
+    return;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return;
+
+  lock_acquire (&filesys_lock);
+  file_seek (f, position);
+  lock_release (&filesys_lock);
 }
 
 unsigned
-tell (int fd UNUSED)
+tell (int fd)
 {
-  return 0;
+  if (fd < 2 || fd >= 128)
+    return 0;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return 0;
+
+  lock_acquire (&filesys_lock);
+  unsigned pos = file_tell (f);
+  lock_release (&filesys_lock);
+
+  return pos;
 }
 
 void
-close (int fd UNUSED)
+close (int fd)
 {
+  if (fd < 2 || fd >= 128)
+    return;
+
+  struct thread *cur = thread_current ();
+  struct file *f = cur->file_table[fd];
+  if (f == NULL)
+    return;
+
+  lock_acquire (&filesys_lock);
+  file_close (f);
+  cur->file_table[fd] = NULL;
+  if (fd < cur->next_fd)
+    cur->next_fd = fd;
+  lock_release (&filesys_lock);
 }
 
 static void

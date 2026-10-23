@@ -31,25 +31,47 @@ process_execute (const char *file_name)
   char *fn_copy;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-
-  /*lab02 exercise 1.1   get the process's name */
-  /*For example, if file_name is "grep foo bar", real_name becomes "grep". */
   char prog_name[128];
   char *save_ptr;
   strlcpy (prog_name, file_name, sizeof prog_name);
   char *real_name = strtok_r (prog_name, " ", &save_ptr);
 
-  /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (real_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy); 
+      return TID_ERROR;
+    }
+
+  struct thread *cur = thread_current ();
+  struct thread *child = NULL;
+  struct list_elem *e;
+  for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, allelem);
+      if (t->tid == tid)
+        {
+          child = t;
+          break;
+        }
+    }
+
+  if (child != NULL)
+    {
+      child->parent = cur;
+      list_push_back (&cur->children, &child->child_elem);
+    }
+
+  /* Parent waits here until child finishes loading */
+  sema_down (&child->load_sema);
+
+  if (!child->load_status)
+    return -1;
 
   return tid;
 }
@@ -62,27 +84,23 @@ static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
+  struct thread *cur = thread_current ();
   struct intr_frame if_;
   bool success;
 
-  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  cur->load_status = success;
+  sema_up (&cur->load_sema);
+
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
 
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -99,7 +117,30 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  struct thread *cur = thread_current ();
+  struct thread *child = NULL;
+  struct list_elem *e;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, child_elem);
+      if (t->tid == child_tid)
+        {
+          child = t;
+          break;
+        }
+    }
+
+  if (child == NULL || child->has_waited)
+    return -1;
+
+  child->has_waited = true;
+  sema_down (&child->wait_sema);
+
+  int status = child->child_exit_status;
+  list_remove (&child->child_elem);
+
+  return status;
 }
 
 /** Free the current process's resources. */
@@ -111,6 +152,21 @@ process_exit (void)
 
   /*print corrospondif massage*/
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+  cur->child_exit_status = cur->exit_status;
+  sema_up (&cur->wait_sema);
+
+  /* Close all open file descriptors */
+  lock_acquire (&filesys_lock);
+  for (int i = 2; i < 128; i++)
+    {
+      if (cur->file_table[i] != NULL)
+        {
+          file_close (cur->file_table[i]);
+          cur->file_table[i] = NULL;
+        }
+    }
+  lock_release (&filesys_lock);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

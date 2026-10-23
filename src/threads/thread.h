@@ -94,9 +94,23 @@ struct thread
     struct list_elem elem;              /**< List element. */
 
 #ifdef USERPROG
-    /* Owned by userprog/process.c. */
-    uint32_t *pagedir;                  /**< Page directory. */
-    int exit_status;   /**lab2_exercise 1.1  : now  process can record its status before terminate  */
+
+    uint32_t *pagedir;                    
+    int exit_status;                      
+
+    
+    struct file *file_table[128];         
+    int next_fd;                         
+
+    /* Task 4 */
+    struct thread *parent;                
+    struct list children;                 
+    struct list_elem child_elem;          
+    struct semaphore load_sema;           
+    struct semaphore wait_sema;           
+    bool load_status;                     
+    int child_exit_status;                
+    bool has_waited;
 #endif
 
     /* Owned by thread.c. */
