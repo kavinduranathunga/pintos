@@ -470,18 +470,14 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
-  #ifdef USERPROG
+#ifdef USERPROG
     t->next_fd = 2; 
     for (int i = 0; i < 128; i++)
       t->file_table[i] = NULL;
 
     t->parent = NULL;
     list_init (&t->children);
-    sema_init (&t->load_sema, 0);
-    sema_init (&t->wait_sema, 0);
-    t->load_status = false;
-    t->child_exit_status = -1;
-    t->has_waited = false;
+    t->cp = NULL;
   #endif
 
   old_level = intr_disable ();
