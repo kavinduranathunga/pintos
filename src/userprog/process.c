@@ -164,6 +164,7 @@ process_wait (tid_t child_tid)
 }
 
 /** Free the current process's resources. */
+/** Free the current process's resources. */
 void
 process_exit (void)
 {
@@ -172,20 +173,14 @@ process_exit (void)
 
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
+  /* 1. Notify parent via shared child_status */
   if (cur->cp != NULL)
     {
       cur->cp->exit_status = cur->exit_status;
       sema_up (&cur->cp->wait_sema);
     }
 
-  if (cur->run_file != NULL)
-    {
-      file_allow_write (cur->run_file);
-      file_close (cur->run_file);
-      cur->run_file = NULL;
-    }
-
-  /* Close all open file descriptors */
+  /* 2. Close all open file descriptors first */
   lock_acquire (&filesys_lock);
   for (int i = 2; i < 128; i++)
     {
@@ -197,6 +192,15 @@ process_exit (void)
     }
   lock_release (&filesys_lock);
 
+  /* 3. Safely allow writes back to the running executable and close it ONCE */
+  if (cur->run_file != NULL)
+    {
+      file_allow_write (cur->run_file);
+      file_close (cur->run_file);
+      cur->run_file = NULL;
+    }
+
+  /* 4. Destroy page directory */
   pd = cur->pagedir;
   if (pd != NULL) 
     {
@@ -205,7 +209,6 @@ process_exit (void)
       pagedir_destroy (pd);
     }
 }
-
 /** Sets up the CPU for running user code in the current
    thread.
    This function is called on every context switch. */
