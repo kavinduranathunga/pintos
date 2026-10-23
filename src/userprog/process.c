@@ -115,8 +115,11 @@ start_process (void *aux)
 
   palloc_free_page (file_name);
 
-  if (!success) 
-    thread_exit ();
+if (!success) 
+    {
+      cur->exit_status = -1; 
+      thread_exit ();
+    }
 
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
