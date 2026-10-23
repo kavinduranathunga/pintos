@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -49,17 +50,7 @@ process_execute (const char *file_name)
     }
 
   struct thread *cur = thread_current ();
-  struct thread *child = NULL;
-  struct list_elem *e;
-  for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
-    {
-      struct thread *t = list_entry (e, struct thread, allelem);
-      if (t->tid == tid)
-        {
-          child = t;
-          break;
-        }
-    }
+  struct thread *child = thread_from_tid (tid);
 
   if (child != NULL)
     {
