@@ -178,9 +178,15 @@ thread_create (const char *name, int priority,
   t = palloc_get_page (PAL_ZERO);
   if (t == NULL)
     return TID_ERROR;
+   
 
   /* Initialize thread. */
   init_thread (t, name, priority);
+
+  #ifdef USERPROG
+    t->exit_status = 0;   /*lab2 exersice 1.1   inialize exit_status*/
+  #endif
+
   tid = t->tid = allocate_tid ();
 
   /* Stack frame for kernel_thread(). */
@@ -464,6 +470,16 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+#ifdef USERPROG
+    t->next_fd = 2; 
+    for (int i = 0; i < 128; i++)
+      t->file_table[i] = NULL;
+
+    t->parent = NULL;
+    list_init (&t->children);
+    t->cp = NULL;
+  #endif
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
@@ -579,6 +595,22 @@ allocate_tid (void)
   return tid;
 }
 
+
+/* Returns the thread with the given TID, or a null pointer if none exists. */
+struct thread *
+thread_from_tid (tid_t tid)
+{
+  struct list_elem *e;
+
+  for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, allelem);
+      if (t->tid == tid)
+        return t;
+    }
+  return NULL;
+}
+
 /** Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);

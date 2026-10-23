@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -31,51 +32,95 @@ process_execute (const char *file_name)
   char *fn_copy;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* 1. Allocate child status in the heap (Hint 1) */
+  struct child_status *cp = malloc (sizeof (struct child_status));
+  if (cp == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+
+  cp->tid = TID_ERROR;
+  cp->exit_status = -1;
+  cp->load_status = false;
+  cp->has_waited = false;
+  cp->command_line = fn_copy;
+  sema_init (&cp->load_sema, 0);
+  sema_init (&cp->wait_sema, 0);
+
+  struct thread *cur = thread_current ();
+  list_push_back (&cur->children, &cp->elem);
+
+  char prog_name[128];
+  char *save_ptr;
+  strlcpy (prog_name, file_name, sizeof prog_name);
+  char *real_name = strtok_r (prog_name, " ", &save_ptr);
+
+  /* 2. Pass `cp` directly as aux to thread_create (Hint 2) */
+  tid = thread_create (real_name, PRI_DEFAULT, start_process, cp);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      list_remove (&cp->elem);
+      free (cp);
+      palloc_free_page (fn_copy); 
+      return TID_ERROR;
+    }
+
+  cp->tid = tid;
+
+  struct thread *child = thread_from_tid (tid);
+  if (child != NULL)
+    {
+      child->parent = cur;
+      child->cp = cp;
+    }
+
+  /* 3. Parent waits here until child finishes loading */
+  sema_down (&cp->load_sema);
+
+  if (!cp->load_status)
+    return -1;
+
   return tid;
 }
+/*end */
 
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *aux)
 {
-  char *file_name = file_name_;
+  struct child_status *cp = aux;
+  char *file_name = cp->command_line;
+  struct thread *cur = thread_current ();
   struct intr_frame if_;
   bool success;
 
-  /* Initialize interrupt frame and load executable. */
+  /* Instantly attach cp to the thread so exit() finds it without race conditions */
+  cur->cp = cp;
+
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  cp->load_status = success;
+  sema_up (&cp->load_sema);
+
   palloc_free_page (file_name);
+
   if (!success) 
     thread_exit ();
 
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
-
 /** Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
@@ -86,9 +131,33 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *cur = thread_current ();
+  struct child_status *cp = NULL;
+  struct list_elem *e;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e))
+    {
+      struct child_status *c = list_entry (e, struct child_status, elem);
+      if (c->tid == child_tid)
+        {
+          cp = c;
+          break;
+        }
+    }
+
+  if (cp == NULL || cp->has_waited)
+    return -1;
+
+  cp->has_waited = true;
+  sema_down (&cp->wait_sema);
+
+  int status = cp->exit_status;
+  list_remove (&cp->elem);
+  free (cp); /* Hint 3: Free heap memory when parent waits and reaps */
+
+  return status;
 }
 
 /** Free the current process's resources. */
@@ -98,18 +167,36 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
+  printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+  if (cur->cp != NULL)
+    {
+      cur->cp->exit_status = cur->exit_status;
+      sema_up (&cur->cp->wait_sema);
+    }
+
+  if (cur->run_file != NULL)
+    {
+      file_allow_write (cur->run_file);
+      file_close (cur->run_file);
+      cur->run_file = NULL;
+    }
+
+  /* Close all open file descriptors */
+  lock_acquire (&filesys_lock);
+  for (int i = 2; i < 128; i++)
+    {
+      if (cur->file_table[i] != NULL)
+        {
+          file_close (cur->file_table[i]);
+          cur->file_table[i] = NULL;
+        }
+    }
+  lock_release (&filesys_lock);
+
   pd = cur->pagedir;
   if (pd != NULL) 
     {
-      /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
@@ -195,7 +282,7 @@ struct Elf32_Phdr
 #define PF_W 2          /**< Writable. */
 #define PF_R 4          /**< Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char *cmdline); // add  a  argument
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -221,13 +308,24 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
+  /*lab 2 Exercise 2.1 Make a local copy of file_name to extract executable name for filesys_open */
+  char fn_copy[128];
+  char *save_ptr;
+  strlcpy (fn_copy, file_name, sizeof fn_copy);
+  char *prog_name = strtok_r (fn_copy, " ", &save_ptr);
+  /*end*/
+
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (prog_name); //change into prog_name
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", prog_name); //file name changed into prog_name
       goto done; 
     }
+
+  // Task 5
+  file_deny_write (file);
+  t->run_file = file;
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -238,7 +336,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", prog_name); // if error in prog_name file when opening print this
       goto done; 
     }
 
@@ -302,7 +400,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp,file_name)) //Pass full file_name k for argument parsing
     goto done;
 
   /* Start address. */
@@ -312,7 +410,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+      {
+        if (file != NULL)
+          file_close (file);
+      }
   return success;
 }
 
@@ -426,12 +528,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 /** Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
+/** Sets up user stack and pushes command-line arguments onto it. */
+//lab2 exercise 2.1 //
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char *cmdline) 
 {
   uint8_t *kpage;
   bool success = false;
 
+  /* 1. Allocate a page of user memory */
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
@@ -441,9 +546,63 @@ setup_stack (void **esp)
       else
         palloc_free_page (kpage);
     }
-  return success;
+
+  if (!success)
+    return false;
+
+  char *token, *save_ptr;
+  char *argv[128];
+  int argc = 0;
+  int i; /* Declared outside for C89 compatibility */
+
+  /* Make a temporary copy of cmdline to tokenize using strtok_r */
+  char *cmd_copy = palloc_get_page (0);
+  if (cmd_copy == NULL)
+    return false;
+  strlcpy (cmd_copy, cmdline, PGSIZE);
+
+  /* 2. Parse arguments and push argument strings onto stack (right-to-left) */
+  for (token = strtok_r (cmd_copy, " ", &save_ptr); token != NULL;
+       token = strtok_r (NULL, " ", &save_ptr))
+    {
+      *esp -= strlen (token) + 1;
+      memcpy (*esp, token, strlen (token) + 1);
+      argv[argc] = *esp;
+      argc++;
+    }
+
+  /* 3. Round stack pointer down to 4-byte boundary for word alignment */
+  *esp = (void *) ((uintptr_t) *esp & ~0x3);
+
+  /* 4. Push NULL sentinel pointer (argv[argc]) */
+  *esp -= sizeof (char *);
+  *(char **) *esp = NULL;
+
+  /* 5. Push pointers to argument strings in reverse order */
+  for (i = argc - 1; i >= 0; i--)
+    {
+      *esp -= sizeof (char *);
+      *(char **) *esp = argv[i];
+    }
+
+  /* 6. Push argv (pointer to argv[0]) */
+  char **argv_start = *esp;
+  *esp -= sizeof (char **);
+  *(char ***) *esp = argv_start;
+
+  /* 7. Push argc */
+  *esp -= sizeof (int);
+  *(int *) *esp = argc;
+
+  /* 8. Push fake return address (0) */
+  *esp -= sizeof (void *);
+  *(void **) *esp = NULL;
+
+  palloc_free_page (cmd_copy);
+  return true;
 }
 
+//end
 /** Adds a mapping from user virtual address UPAGE to kernel
    virtual address KPAGE to the page table.
    If WRITABLE is true, the user process may modify the page;

@@ -3,6 +3,19 @@
 
 #include "threads/thread.h"
 
+
+struct child_status
+  {
+    tid_t tid;
+    int exit_status;
+    bool load_status;
+    bool has_waited;
+    char *command_line;
+    struct semaphore load_sema;
+    struct semaphore wait_sema;
+    struct list_elem elem;
+  };
+
 tid_t process_execute (const char *file_name);
 int process_wait (tid_t);
 void process_exit (void);
