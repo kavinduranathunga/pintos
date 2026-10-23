@@ -48,10 +48,21 @@ check_ptr (const void *ptr)
 static void
 check_buffer (const void *buffer, unsigned size)
 {
-  const char *ptr = (const char *) buffer;
+  if (buffer == NULL || !is_user_vaddr (buffer) || !is_user_vaddr ((char *) buffer + size - 1))
+    {
+      thread_current ()->exit_status = -1;
+      thread_exit ();
+    }
+
+  const char *ptr = (const char * ) buffer;
   for (unsigned i = 0; i < size; i++)
     {
-      check_ptr (ptr + i);
+      const void *user_ptr = ptr + i;
+      if (!is_user_vaddr (user_ptr) || pagedir_get_page (thread_current ()->pagedir, user_ptr) == NULL)
+        {
+          thread_current ()->exit_status = -1;
+          thread_exit ();
+        }
     }
 }
 

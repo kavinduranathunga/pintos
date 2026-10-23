@@ -195,6 +195,7 @@ process_exit (void)
   /* 3. Safely allow writes back to the running executable and close it ONCE */
   if (cur->run_file != NULL)
     {
+      file_allow_write (cur->run_file);
       file_close (cur->run_file);
       cur->run_file = NULL;
     }
