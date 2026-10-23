@@ -54,11 +54,13 @@ check_buffer (const void *buffer, unsigned size)
       thread_exit ();
     }
 
-  const char *ptr = (const char * ) buffer;
-  for (unsigned i = 0; i < size; i++)
+  /* Check every page in the buffer range to prevent page faults */
+  uintptr_t start = pg_round_down (buffer);
+  uintptr_t end = pg_round_down ((char *) buffer + size - 1);
+  
+  for (uintptr_t addr = start; addr <= end; addr += PGSIZE)
     {
-      const void *user_ptr = ptr + i;
-      if (!is_user_vaddr (user_ptr) || pagedir_get_page (thread_current ()->pagedir, user_ptr) == NULL)
+      if (pagedir_get_page (thread_current ()->pagedir, (void *) addr) == NULL)
         {
           thread_current ()->exit_status = -1;
           thread_exit ();
