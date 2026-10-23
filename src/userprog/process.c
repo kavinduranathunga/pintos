@@ -78,16 +78,6 @@ process_execute (const char *file_name)
     {
       child->parent = cur;
       child->cp = cp;
-
-      lock_acquire (&filesys_lock);
-      for (int i = 2; i < 128; i++)
-        {
-          if (cur->file_table[i] != NULL)
-            {
-              child->file_table[i] = file_duplicate (cur->file_table[i]);
-            }
-        }
-      lock_release (&filesys_lock);
     }
 
   /* 3. Parent waits here until child finishes loading */
